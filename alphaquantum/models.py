@@ -114,7 +114,7 @@ class RepresentationNet(hk.Module):
 
     def _encode_program(self, inputs: Observation, batch_size: int):
         program = inputs.program
-        max_program_size = inputs.program.shape[0]
+        max_program_size = inputs.program.shape[0] # pyright: ignore
         program_length = inputs.program_length
         program_onehot = self.make_program_onehot(program, batch_size, max_program_size)
         program_encoding = self.apply_program_mlp_embedder(program_onehot)
@@ -142,7 +142,7 @@ class RepresentationNet(hk.Module):
 
     def apply_program_attention_embedder(self, program_encoding):
         attention_params = self._hparams.representation
-        ake_attention_block = functools.partial(
+        ake_attention_block = partial(
             MultiQueryAttentionBlock, attention_params, causal_mask=False
         )
         pass
