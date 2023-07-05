@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "alphaquantum"
+version = "0.1.0"
+description = ""
+authors = ["Jude Rosen <juderosen@uchicago.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+jax = "^0.4.13"
+jaxlib = "^0.4.13"
+chex = "^0.1.7"
+mctx = "^0.0.2"
+typing-extensions = "^4.6.3"
+pytest = "^7.4.0"
+rich = "^13.4.2"
+dm-haiku = "^0.0.9"
+optax = "^0.1.5"
+muax = "^0.0.2.8.3"
+gymnasium = "^0.28.1"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
