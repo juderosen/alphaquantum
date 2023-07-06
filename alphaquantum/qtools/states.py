@@ -2,9 +2,11 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as linalg
 import chex
+from functools import partial
 
 
 # Various transformations/operations
+@jax.jit
 def ket2dm(psi: chex.Array) -> chex.Array:
     """
     Returns a PyTorch tensor representing the density matrix of the ket `psi`.
@@ -22,6 +24,7 @@ def apply_operator(op: chex.Array, state: chex.Array) -> chex.Array:
     chex.assert_rank([op, state], [2, 2])
     return jnp.matmul(op, jnp.matmul(state, dag(op)))
 
+@jax.jit
 def expm(A: chex.Array) -> chex.Array:
     """
     Returns the matrix exponential of the PyTorch tensor `A`.
@@ -29,11 +32,13 @@ def expm(A: chex.Array) -> chex.Array:
     expm_A = linalg.expm(A)
     return expm_A
 
+@partial(jax.jit, static_argnums=(0,1)) # WARN: even worth JITing?
 def basis(n: int, i: int, dtype=jnp.complex64) -> chex.Array:
     state = jnp.zeros(n, dtype=dtype)
     state = state.at[i].set(1.0 + 0.0j)
     return state
 
+@partial(jax.jit, static_argnums=(0,1)) # WARN: even worth JITing?
 def ghz_state(n: int, dtype=jnp.complex64) -> chex.Array:
     N = 2**n
     state = jnp.zeros(N, dtype=dtype)
@@ -62,10 +67,11 @@ def sigmaz(dtype=jnp.complex64) -> chex.Array:
     """
     return jnp.array([[1, 0], [0, -1]], dtype=dtype)
 
+@jax.jit
 def hadamard(dtype=jnp.complex64) -> chex.Array:
     return (1/jnp.sqrt(2))*jnp.array([[1, 1], [1, -1]], dtype=dtype)
 
-def CNOT(n: int, control: int, target: int, dtype=jnp.complex64) -> chex.Array:
+def CNOT(n: int, control: int, target: int, dtype=jnp.complex64) -> chex.Array: # TODO: JITable?
     #assert control < target
     basis0 = ket2dm(basis(2, 0))
     basis1 = ket2dm(basis(2, 1))
@@ -87,14 +93,3 @@ def fidelity_dm(state1: chex.Array, state2: chex.Array) -> float:
     state1_sqrt = linalg.sqrtm(state1)
     fidelity = (jnp.abs(jnp.trace(linalg.sqrtm(jnp.matmul(state1_sqrt, jnp.matmul(state2, state1_sqrt)))) ** 2)).astype(float)
     return fidelity
-
-#state1, state2 = ghz_state(2), ghz_state(2)
-#print(fidelity_ket(state1, state2))
-
-#state1_dm, state2_dm = ket2dm(state1), ket2dm(state2)
-#print(fidelity_dm(state1_dm, state2_dm))
-
-#cnot_test = CNOT(3, 0, 2)
-#print(cnot_test.shape)
-#print(cnot_test)
-

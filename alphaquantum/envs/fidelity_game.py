@@ -12,7 +12,7 @@ from rich import print
 
 State = chex.Array
 Operator = chex.Array
-Action = Union[chex.Array, int] # TODO: do we need these unions?
+Action = Union[chex.Array, int]  # TODO: do we need these unions?
 Program = Union[chex.Array, Sequence[Action]]
 Fidelity = Union[chex.Array, float]
 Time = Union[chex.Array, float]
@@ -55,7 +55,7 @@ class Env:
     reward: Reward
 
 
-PAD = -1 # action padding value for no action
+PAD = -1  # action padding value for no action
 
 
 def get_program_sequence_unpadded(program: Program) -> Program:  # not JITable
@@ -69,12 +69,20 @@ class FidelityGameEnv:
     """Stateless environment for fidelity optimization game"""
 
     def __init__(self, task_spec: TaskSpec):
+        """Just stores task_spec"""
         self.task_spec = task_spec
 
     @partial(jit, static_argnums=(0,))
     def step(
         self, env: Env, action: Action
     ) -> Tuple[Env, Observation, Reward, Done, Truncated, Info]:
+        """Step function to perform action on environment
+        Args:
+            env: Current environment
+            action: Action to take
+        Returns:
+            (new env, observation, reward, done, truncated, info)
+        """
         action_index = jnp.array(action, int)
         action_operator = self.task_spec.possible_actions[action_index]
         new_program = env.program
@@ -113,6 +121,10 @@ class FidelityGameEnv:
 
     @partial(jit, static_argnums=(0,))
     def reset(self) -> Tuple[Env, Observation, Info]:
+        """Reset environment to |0>
+        Returns:
+            (env, observation, info)
+        """
         state = states.ket2dm(states.basis(2**self.task_spec.num_wires, 0))
         program = jnp.add(jnp.zeros(self.task_spec.max_program_size), PAD)
         # -1 is padding value for no action (yet). will need to deal with this in code

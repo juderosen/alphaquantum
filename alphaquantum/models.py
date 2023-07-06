@@ -3,17 +3,18 @@ import jax
 import jax.numpy as jnp
 from jax import jit, vmap
 from functools import partial
-from typing import Sequence, Tuple, Union, Optional, List, Callable
+from typing import Sequence, Tuple, Union, Optional, List, Callable, Dict, Any
 import haiku as hk
 import optax
 
 from alphaquantum.qtools import states
-from alphaquantum.envs.fidelity_game import TaskSpec, Observation
+from alphaquantum.envs.fidelity_game import TaskSpec, Observation, Action
 
 from rich import print
 
 
 ObservationBatch = Sequence[Observation]  # WARN: is the batch_size always 1?
+# TODO: Understand batching/batch_size in alphadev algorithm
 
 
 # Complex activation functions
@@ -55,9 +56,60 @@ class RepresentationHyperparams:
 
 
 @chex.dataclass(frozen=True)
+class ValueHyperparams:
+    num_bins: int
+    max: float
+
+@chex.dataclass(frozen=True)
 class Hyperparams:
     representation: RepresentationHyperparams
     attention_num_layers: int
+    embedding_dim: int
+    value: ValueHyperparams
+
+
+@chex.dataclass(frozen=True)
+class NetworkOutput:
+    value: float
+    correctness_value_logits: chex.Array
+    latency_value_logits: chex.Array
+    policy_logits: Dict[Action, float]
+
+class Network(object):
+    """Wrapper around Representation and Prediction networks."""
+
+    def __init__(self, hparams: Hyperparams, task_spec: TaskSpec):
+        self.representation = hk.transform(RepresentationNet(
+            hparams, task_spec, hparams.embedding_dim
+        ))
+        self.prediction = hk.transform(PredictionNet(
+            task_spec=task_spec,
+            value_max=hparams.value.max,
+            value_num_bins=hparams.value.num_bins,
+            embedding_dim=hparams.embedding_dim,
+        ))
+        rep_key, pred_key = jax.random.split(jax.random.PRNGKey(42))
+        self.params = {
+            'representation': self.representation.init(rep_key),
+            'prediction': self.prediction.init(pred_key),
+        }
+
+    def inference(self, params: Any, observation: Observation) -> NetworkOutput:
+        # representation + prediction function
+        embedding = self.representation.apply(params['representation'], observation)
+        return self.prediction.apply(params['prediction'], embedding)
+
+    def get_params(self):
+        # Returns the weights of this network.
+        return self.params
+
+    def update_params(self, updates: Any) -> None:
+        # Update network weights internally.
+        self.params = jax.tree_map(lambda p, u: p + u, self.params, updates)
+
+    def training_steps(self) -> int:
+        # How many steps / batches the network has been trained for.
+        return 0
 
 
 class MultiQueryAttentionBlock(hk.Module):

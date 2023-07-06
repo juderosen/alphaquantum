@@ -130,3 +130,6 @@ dmypy.json
 
 # old unused files
 **/trashbin/
+
+# weird mac thing
+**/.DS_Store
