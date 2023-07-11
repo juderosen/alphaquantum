@@ -19,47 +19,19 @@ ObservationBatch = Sequence[Observation]  # WARN: is the batch_size always 1?
 # TODO: Understand batching/batch_size in alphadev algorithm
 
 
-# # Complex activation functions
-# @jit
-# def crelu(x: chex.Array) -> chex.Array:
-#     """Complex ReLU activation function
-#     Arguments:
-#         x: JAX array input of complex dtype
-#
-#     Returns:
-#         Complex ReLU applied to Re and Im parts separately
-#     """
-#     # chex.assert_type(x, jnp.complex64)
-#     re = jnp.real(x)
-#     im = jnp.imag(x)
-#     return jnp.maximum(re, 0) + jnp.maximum(im, 0) * 1j
-#
-#
-# @jit
-# def cardiod(x: chex.Array) -> chex.Array:
-#     """Cardiod activation function. Similar to crelu.
-#     Arguments:
-#         x: JAX array input of complex dtype
-#
-#     Returns:
-#         Cardiod activation
-#     """
-#     arg = jnp.angle(x)
-#     return 0.5 * (1 + jnp.cos(arg)) * x
-
-
 @chex.dataclass(frozen=True)
 class AttentionHyperparams:
     head_depth: int
     num_heads: int
     attention_dropout: bool
     position_encoding: str
-    num_layers: int
+    #num_layers: int
 
 
 @chex.dataclass(frozen=True)
 class RepresentationHyperparams:
     attention: AttentionHyperparams
+    attention_num_layers: int
     repr_net_res_blocks: int
     # activation_function: Callable  # relu replacement for complex-valued NNs
 
@@ -73,7 +45,6 @@ class ValueHyperparams:
 @chex.dataclass(frozen=True)
 class Hyperparams:
     representation: RepresentationHyperparams
-    attention_num_layers: int
     embedding_dim: int
     value: ValueHyperparams
 
@@ -157,7 +128,7 @@ class RepresentationNet(hk.Module):
         program_length = inputs.program_length
         program_onehot = self.make_program_onehot(program, batch_size, max_program_size)
         program_encoding = self.apply_program_mlp_embedder(program_onehot)
-        # program_encoding = self.apply_program_attention_embedder(program_onehot)
+        # program_encoding = self.apply_program_attention_embedder(program_encoding)
         # TODO: padding?
         return program_encoding
 
@@ -184,9 +155,26 @@ class RepresentationNet(hk.Module):
     def apply_program_attention_embedder(self, program_encoding):
         attention_params = self._hparams.representation.attention # TODO: make this passable via partial?
         make_attention_block = partial(
-            MultiQueryAttentionBlock, attention_params, causal_mask=False
+            MultiQueryAttentionBlock, num_heads=attention_params.num_heads, head_depth=attention_params.head_depth, causal_mask=False # TODO: Make this make more sense
         )
-        pass
+        attention_encoders = [
+            make_attention_block(name=f'attention_program_sequencer_{i}')
+            for i in range(self._hparams.representation.attention_num_layers)
+        ]
+        *_, seq_size, feat_size = program_encoding.shape
+
+        position_encodings = jnp.broadcast_to(
+            MultiQueryAttentionBlock.sinusoid_position_encoding(
+                seq_size, feat_size
+            ),
+            program_encoding.shape,
+        )
+        program_encoding += position_encodings
+
+        for e in attention_encoders:
+            program_encoding = e(program_encoding) # TODO: figure out discrepencies with alphadev.py code
+
+        return program_encoding
 
     def _encode_state(self, inputs: Observation, batch_size: int) -> chex.Array:
         state = inputs.state
@@ -210,7 +198,7 @@ class RepresentationNet(hk.Module):
         # TODO: implement repeat_program_encoding()? why is this there?
 
         state_embedding = hk.vmap(
-            state_embedder, in_axes=1, out_axes=1, split_rng=False
+            state_embedder, in_axes=1, out_axes=0, split_rng=False
         )(state_encoding)
 
         grouped_representation = jnp.concatenate(
@@ -317,16 +305,33 @@ if __name__ == "__main__":
     # onehot = jax.nn.one_hot(test_program, 6)
     # print(onehot)
     # print(onehot.shape)
-    hparams = RepresentationHyperparams(  # pyright: ignore reportUnknownArgumentType
+
+    attn = AttentionHyperparams(  # pyright: ignore reportUnknownArgumentType
         head_depth=20,
         num_heads=4,
         attention_dropout=False,
-        position_encoding="?",
-        activation_function=cardiod,
+        position_encoding="??",
+    )
+
+    value = ValueHyperparams(  # pyright: ignore reportUnknownArgumentType
+        num_bins=10,
+        max=100.0,
+    )
+
+    repr = RepresentationHyperparams(  # pyright: ignore reportUnknownArgumentType
+        attention=attn,
+        attention_num_layers=3,
+        repr_net_res_blocks=3,
+    )
+
+    hparams = Hyperparams(  # pyright: ignore reportUnknownArgumentType
+        representation=repr,
+        embedding_dim=20,
+        value=value,
     )
 
     def pre(x):
-        nn = RepresentationNet(task_spec_ghz3, 6, hparams)
+        nn = RepresentationNet(task_spec_ghz3, 20, hparams)
         return nn(x)
 
     forward = hk.transform(pre)
@@ -335,3 +340,4 @@ if __name__ == "__main__":
     print(pred)
 
     # print(MultiQueryAttentionBlock.sinusoid_position_encoding(10, 5))
+
