@@ -1,14 +1,16 @@
 import chex
+import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import jit, vmap
 from functools import partial
 from typing import Sequence, Tuple, Union, Optional, List, Callable, Dict, Any
 import haiku as hk
-import optax
+#import optax
 
 from alphaquantum.qtools import states
-from alphaquantum.envs.fidelity_game import TaskSpec, Observation, Action
+from alphaquantum.envs.fidelity_game import TaskSpec, Observation, Action, Program
+from alphaquantum.nn import ResBlockV2, MultiQueryAttentionBlock
 
 from rich import print
 
@@ -17,48 +19,56 @@ ObservationBatch = Sequence[Observation]  # WARN: is the batch_size always 1?
 # TODO: Understand batching/batch_size in alphadev algorithm
 
 
-# Complex activation functions
-@jit
-def crelu(x: chex.Array) -> chex.Array:
-    """Complex ReLU activation function
-    Arguments:
-        x: JAX array input of complex dtype
-
-    Returns:
-        Complex ReLU applied to Re and Im parts separately
-    """
-    # chex.assert_type(x, jnp.complex64)
-    re = jnp.real(x)
-    im = jnp.imag(x)
-    return jnp.maximum(re, 0) + jnp.maximum(im, 0) * 1j
-
-
-@jit
-def cardiod(x: chex.Array) -> chex.Array:
-    """Cardiod activation function. Similar to crelu.
-    Arguments:
-        x: JAX array input of complex dtype
-
-    Returns:
-        Cardiod activation
-    """
-    arg = jnp.angle(x)
-    return 0.5 * (1 + jnp.cos(arg)) * x
+# # Complex activation functions
+# @jit
+# def crelu(x: chex.Array) -> chex.Array:
+#     """Complex ReLU activation function
+#     Arguments:
+#         x: JAX array input of complex dtype
+#
+#     Returns:
+#         Complex ReLU applied to Re and Im parts separately
+#     """
+#     # chex.assert_type(x, jnp.complex64)
+#     re = jnp.real(x)
+#     im = jnp.imag(x)
+#     return jnp.maximum(re, 0) + jnp.maximum(im, 0) * 1j
+#
+#
+# @jit
+# def cardiod(x: chex.Array) -> chex.Array:
+#     """Cardiod activation function. Similar to crelu.
+#     Arguments:
+#         x: JAX array input of complex dtype
+#
+#     Returns:
+#         Cardiod activation
+#     """
+#     arg = jnp.angle(x)
+#     return 0.5 * (1 + jnp.cos(arg)) * x
 
 
 @chex.dataclass(frozen=True)
-class RepresentationHyperparams:
+class AttentionHyperparams:
     head_depth: int
     num_heads: int
     attention_dropout: bool
     position_encoding: str
-    activation_function: Callable  # relu replacement for complex-valued NNs
+    num_layers: int
+
+
+@chex.dataclass(frozen=True)
+class RepresentationHyperparams:
+    attention: AttentionHyperparams
+    repr_net_res_blocks: int
+    # activation_function: Callable  # relu replacement for complex-valued NNs
 
 
 @chex.dataclass(frozen=True)
 class ValueHyperparams:
     num_bins: int
     max: float
+
 
 @chex.dataclass(frozen=True)
 class Hyperparams:
@@ -75,29 +85,32 @@ class NetworkOutput:
     latency_value_logits: chex.Array
     policy_logits: Dict[Action, float]
 
+
 class Network(object):
     """Wrapper around Representation and Prediction networks."""
 
     def __init__(self, hparams: Hyperparams, task_spec: TaskSpec):
-        self.representation = hk.transform(RepresentationNet(
-            hparams, task_spec, hparams.embedding_dim
-        ))
-        self.prediction = hk.transform(PredictionNet(
-            task_spec=task_spec,
-            value_max=hparams.value.max,
-            value_num_bins=hparams.value.num_bins,
-            embedding_dim=hparams.embedding_dim,
-        ))
+        self.representation = hk.transform(
+            RepresentationNet(hparams, task_spec, hparams.embedding_dim)
+        )
+        self.prediction = hk.transform(
+            PredictionNet(
+                task_spec=task_spec,
+                value_max=hparams.value.max,
+                value_num_bins=hparams.value.num_bins,
+                embedding_dim=hparams.embedding_dim,
+            )
+        )
         rep_key, pred_key = jax.random.split(jax.random.PRNGKey(42))
         self.params = {
-            'representation': self.representation.init(rep_key),
-            'prediction': self.prediction.init(pred_key),
+            "representation": self.representation.init(rep_key),
+            "prediction": self.prediction.init(pred_key),
         }
 
     def inference(self, params: Any, observation: Observation) -> NetworkOutput:
         # representation + prediction function
-        embedding = self.representation.apply(params['representation'], observation)
-        return self.prediction.apply(params['prediction'], embedding)
+        embedding = self.representation.apply(params["representation"], observation)
+        return self.prediction.apply(params["prediction"], embedding)
 
     def get_params(self):
         # Returns the weights of this network.
@@ -111,37 +124,6 @@ class Network(object):
         # How many steps / batches the network has been trained for.
         return 0
 
-
-class MultiQueryAttentionBlock(hk.Module):
-    """Attention with multiple query heads and a single shared key and value head."""
-
-    def __init__(
-        self,
-        head_depth: int = 128,
-        num_heads: int = 4,
-        attention_dropout: bool = False,
-        position_encoding: str = "absolute",
-        causal_mask: bool = False,
-        name="multiquery_attention_block",
-    ):
-        super().__init__(name=name)
-        self.head_depth = head_depth
-        self.num_heads = num_heads
-        self.attention_dropout = attention_dropout
-        self.position_encoding = position_encoding
-        self.causal_mask = causal_mask
-
-        # self.multihead =
-
-    def __call__(self, x):
-        return x
-
-    def sinusoid_position_encoding(self, seq_size, feat_size):
-        big_number = 10_000
-        pass
-
-    def _multi_query_attention(self):
-        pass
 
 
 class RepresentationNet(hk.Module):
@@ -162,11 +144,16 @@ class RepresentationNet(hk.Module):
     def __call__(self, inputs: Observation):
         batch_size = 1  # inputs.program.shape[1]
 
-        return self._encode_program(inputs, batch_size)
+        program_encoding = self._encode_program(inputs, batch_size)
+        state_encoding = self._encode_state(inputs, batch_size)
 
-    def _encode_program(self, inputs: Observation, batch_size: int):
+        return self.aggregate_state_program(
+            state_encoding, program_encoding, batch_size
+        )
+
+    def _encode_program(self, inputs: Observation, batch_size: int) -> chex.Array:
         program = inputs.program
-        max_program_size = inputs.program.shape[0] # pyright: ignore
+        max_program_size = inputs.program.shape[0]  # pyright: ignore
         program_length = inputs.program_length
         program_onehot = self.make_program_onehot(program, batch_size, max_program_size)
         program_encoding = self.apply_program_mlp_embedder(program_onehot)
@@ -174,17 +161,19 @@ class RepresentationNet(hk.Module):
         # TODO: padding?
         return program_encoding
 
-    def make_program_onehot(self, program, batch_size, max_program_size):
+    def make_program_onehot(
+        self, program: Program, batch_size: int, max_program_size: int
+    ) -> chex.Array:
         return jax.nn.one_hot(
             program, self._task_spec.num_actions
         )  # negative values are mapped to 0-rows
 
-    def apply_program_mlp_embedder(self, program_encoding):
+    def apply_program_mlp_embedder(self, program_encoding: chex.Array) -> chex.Array:
         program_embedder = hk.Sequential(
             [
                 hk.Linear(self._embedding_dim),
-                hk.LayerNorm(axis=-1, create_scale=False, create_offset=False),
-                self._hparams.representation.activation_function,
+                hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
+                jax.nn.relu,
                 hk.Linear(self._embedding_dim),
             ],
             name="per_instruction_program_embedder",
@@ -193,11 +182,74 @@ class RepresentationNet(hk.Module):
         return program_encoding
 
     def apply_program_attention_embedder(self, program_encoding):
-        attention_params = self._hparams.representation
-        ake_attention_block = partial(
+        attention_params = self._hparams.representation.attention # TODO: make this passable via partial?
+        make_attention_block = partial(
             MultiQueryAttentionBlock, attention_params, causal_mask=False
         )
         pass
+
+    def _encode_state(self, inputs: Observation, batch_size: int) -> chex.Array:
+        state = inputs.state
+        state_re = jnp.real(state)
+        state_im = jnp.imag(state)
+        return jnp.concatenate([state_re, state_im], axis=-1)
+
+    def aggregate_state_program(
+        self, state_encoding: chex.Array, program_encoding: chex.Array, batch_size: int
+    ) -> chex.Array:
+        state_embedder = hk.Sequential(
+            [
+                hk.Linear(self._embedding_dim),
+                hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
+                jax.nn.relu,
+                hk.Linear(self._embedding_dim),
+            ],
+            name="per_state_embedder",
+        )
+
+        # TODO: implement repeat_program_encoding()? why is this there?
+
+        state_embedding = hk.vmap(
+            state_embedder, in_axes=1, out_axes=1, split_rng=False
+        )(state_encoding)
+
+        grouped_representation = jnp.concatenate(
+            [state_embedding, program_encoding], axis=-1
+        )
+
+        return self.apply_joint_embedder(grouped_representation, batch_size)
+
+    def apply_joint_embedder(
+        self, grouped_representation: chex.Array, batch_size: int
+    ) -> chex.Array:
+        all_state_net = hk.Sequential(
+            [
+                hk.Linear(self._embedding_dim),
+                hk.LayerNorm(axis=-1),
+                jax.nn.relu,
+                hk.Linear(self._embedding_dim),
+            ],
+            name="per_element_embedder",
+        )
+        joint_state_net = hk.Sequential(
+            [
+                hk.Linear(self._embedding_dim),
+                hk.LayerNorm(axis=-1),
+                jax.nn.relu,
+                hk.Linear(self._embedding_dim),
+            ],
+            name="joint_embedder",
+        )
+
+        joint_resnet = [
+            ResBlockV2(self._embedding_dim, name=f"joint_resblock_{i}")
+            for i in range(self._hparams.representation.repr_net_res_blocks)
+        ]
+        permutations_encoded = all_state_net(grouped_representation)
+        joint_encoding = joint_state_net(jnp.mean(permutations_encoded, axis=1))
+        for net in joint_resnet:
+            joint_encoding = net(joint_encoding)
+        return joint_encoding
 
 
 class PredictionNet(hk.Module):
@@ -281,3 +333,5 @@ if __name__ == "__main__":
     params = forward.init(rng_key, test_obs)
     pred = forward.apply(params, rng_key, test_obs)
     print(pred)
+
+    # print(MultiQueryAttentionBlock.sinusoid_position_encoding(10, 5))
