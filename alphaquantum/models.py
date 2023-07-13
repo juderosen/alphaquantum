@@ -6,7 +6,8 @@ from jax import jit, vmap
 from functools import partial
 from typing import Sequence, Tuple, Union, Optional, List, Callable, Dict, Any
 import haiku as hk
-#import optax
+
+# import optax
 
 from alphaquantum.qtools import states
 from alphaquantum.envs.fidelity_game import TaskSpec, Observation, Action, Program
@@ -25,7 +26,7 @@ class AttentionHyperparams:
     num_heads: int
     attention_dropout: bool
     position_encoding: str
-    #num_layers: int
+    # num_layers: int
 
 
 @chex.dataclass(frozen=True)
@@ -53,7 +54,7 @@ class Hyperparams:
 class NetworkOutput:
     value: float
     correctness_value_logits: chex.Array
-    latency_value_logits: chex.Array
+    time_value_logits: chex.Array
     policy_logits: Dict[Action, float]
 
 
@@ -94,7 +95,6 @@ class Network(object):
     def training_steps(self) -> int:
         # How many steps / batches the network has been trained for.
         return 0
-
 
 
 class RepresentationNet(hk.Module):
@@ -153,26 +153,31 @@ class RepresentationNet(hk.Module):
         return program_encoding
 
     def apply_program_attention_embedder(self, program_encoding):
-        attention_params = self._hparams.representation.attention # TODO: make this passable via partial?
+        attention_params = (
+            self._hparams.representation.attention
+        )  # TODO: make this passable via partial?
         make_attention_block = partial(
-            MultiQueryAttentionBlock, num_heads=attention_params.num_heads, head_depth=attention_params.head_depth, causal_mask=False # TODO: Make this make more sense
+            MultiQueryAttentionBlock,
+            num_heads=attention_params.num_heads,
+            head_depth=attention_params.head_depth,
+            causal_mask=False,  # TODO: Make this make more sense
         )
         attention_encoders = [
-            make_attention_block(name=f'attention_program_sequencer_{i}')
+            make_attention_block(name=f"attention_program_sequencer_{i}")
             for i in range(self._hparams.representation.attention_num_layers)
         ]
         *_, seq_size, feat_size = program_encoding.shape
 
         position_encodings = jnp.broadcast_to(
-            MultiQueryAttentionBlock.sinusoid_position_encoding(
-                seq_size, feat_size
-            ),
+            MultiQueryAttentionBlock.sinusoid_position_encoding(seq_size, feat_size),
             program_encoding.shape,
         )
         program_encoding += position_encodings
 
         for e in attention_encoders:
-            program_encoding = e(program_encoding) # TODO: figure out discrepencies with alphadev.py code
+            program_encoding = e(
+                program_encoding
+            )  # TODO: figure out discrepencies with alphadev.py code
 
         return program_encoding
 
@@ -213,7 +218,9 @@ class RepresentationNet(hk.Module):
         all_state_net = hk.Sequential(
             [
                 hk.Linear(self._embedding_dim),
-                hk.LayerNorm(axis=-1, create_scale=True, create_offset=True), # TODO: check all the axes in the program
+                hk.LayerNorm(
+                    axis=-1, create_scale=True, create_offset=True
+                ),  # TODO: check all the axes in the program
                 jax.nn.relu,
                 hk.Linear(self._embedding_dim),
             ],
@@ -235,11 +242,66 @@ class RepresentationNet(hk.Module):
         ]
         permutations_encoded = all_state_net(grouped_representation)
         # joint_encoding = joint_state_net(jnp.mean(permutations_encoded, axis=1))
-        joint_encoding = joint_state_net(permutations_encoded) # TODO: Figure out this mean thing. is it across batches or something?
+        joint_encoding = joint_state_net(
+            permutations_encoded
+        )  # TODO: Figure out this mean thing. is it across batches or something?
         # BUG: Is this supposed to flatten to a vector?
         for net in joint_resnet:
             joint_encoding = net(joint_encoding)
         return joint_encoding
+
+
+###### Prediction network #######
+def make_head_network(
+    embedding_dim: int,
+    output_size: int,
+    num_hidden_layers: int = 2,
+    name: Optional[str] = None,
+) -> Callable[[chex.Array,], chex.Array]:
+    return hk.Sequential(
+        [
+            ResBlockV2(embedding_dim, name=f"head_resblock_{i}")
+            for i in range(num_hidden_layers)
+        ]
+        + [hk.Linear(output_size)],
+        name=name,
+    )
+
+
+class DistributionSupport(object):
+    def __init__(self, value_max: float, num_bins: int):
+        self.value_max = value_max
+        self.num_bins = num_bins
+
+    def mean(self, logits: chex.Array) -> jnp.float32:
+        return jnp.mean(logits, axis=0).astype(jnp.float32)
+
+    def scalar_to_two_hot(self, scalar: float) -> chex.Array:
+        pass
+
+
+class CategoricalHead(hk.Module):
+    """A head that represents continuous values by a categorical distribution."""
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        support: DistributionSupport,
+        name: str = "CategoricalHead",
+    ):
+        super().__init__(name=name)
+        self._value_support = support
+        self._embedding_dim = embedding_dim
+        self._head = make_head_network(
+            embedding_dim, output_size=self._value_support.num_bins
+        )
+
+    def __call__(self, x: chex.Array):
+        # For training returns the logits, for inference the mean.
+        logits = self._head(x)
+        probs = jax.nn.softmax(logits)
+        mean = jax.vmap(self._value_support.mean)(probs)
+        return dict(logits=logits, mean=mean)
 
 
 class PredictionNet(hk.Module):
@@ -254,10 +316,25 @@ class PredictionNet(hk.Module):
         name: str = "prediction",
     ):
         super().__init__(name=name)
-        pass
+        self.task_spec = task_spec
+        self.value_max = value_max
+        self.value_num_bins = value_num_bins
+        self.support = DistributionSupport(self.value_max, self.value_num_bins)
+        self.embedding_dim = embedding_dim
 
-    def __call__(self, x):
-        pass
+    def __call__(self, embedding: chex.Array) -> NetworkOutput:
+        policy_head = make_head_network(self.embedding_dim, self.task_spec.num_actions)
+        value_head = CategoricalHead(self.embedding_dim, self.support)
+        time_value_head = CategoricalHead(self.embedding_dim, self.support)
+        correctness_value = value_head(embedding)
+        time_value = time_value_head(embedding)
+
+        return NetworkOutput(  # pyright: ignore reportUnknownArgumentType
+            value=correctness_value["mean"] + time_value["mean"],
+            correctness_value_logits=correctness_value["logits"],
+            time_value_logits=time_value["logits"],
+            policy_logits=policy_head(embedding),
+        )
 
 
 # testing stuff
@@ -342,5 +419,22 @@ if __name__ == "__main__":
     print(pred)
     print(pred.shape)
 
-    # print(MultiQueryAttentionBlock.sinusoid_position_encoding(10, 5))
+    def pnet(x):
+        nn2 = PredictionNet(
+            task_spec=task_spec_ghz3,
+            value_max=3.0,
+            value_num_bins=301,
+            embedding_dim=20,
+        )
+        return nn2(x)
 
+    forward_pnet = hk.transform(pnet)
+    params_pnet = forward_pnet.init(rng_key, pred)
+    pred_pnet = forward_pnet.apply(params_pnet, rng_key, pred)
+    print(pred_pnet)
+    print(
+        pred_pnet.value.shape,
+        pred_pnet.correctness_value_logits.shape,
+        pred_pnet.time_value_logits.shape,
+        pred_pnet.policy_logits.shape,
+    )
