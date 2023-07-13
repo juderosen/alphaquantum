@@ -128,7 +128,7 @@ class RepresentationNet(hk.Module):
         program_length = inputs.program_length
         program_onehot = self.make_program_onehot(program, batch_size, max_program_size)
         program_encoding = self.apply_program_mlp_embedder(program_onehot)
-        # program_encoding = self.apply_program_attention_embedder(program_encoding)
+        program_encoding = self.apply_program_attention_embedder(program_encoding)
         # TODO: padding?
         return program_encoding
 
@@ -202,7 +202,7 @@ class RepresentationNet(hk.Module):
         )(state_encoding)
 
         grouped_representation = jnp.concatenate(
-            [state_embedding, program_encoding], axis=-1
+            [state_embedding, program_encoding], axis=0
         )
 
         return self.apply_joint_embedder(grouped_representation, batch_size)
@@ -213,7 +213,7 @@ class RepresentationNet(hk.Module):
         all_state_net = hk.Sequential(
             [
                 hk.Linear(self._embedding_dim),
-                hk.LayerNorm(axis=-1),
+                hk.LayerNorm(axis=-1, create_scale=True, create_offset=True), # TODO: check all the axes in the program
                 jax.nn.relu,
                 hk.Linear(self._embedding_dim),
             ],
@@ -222,7 +222,7 @@ class RepresentationNet(hk.Module):
         joint_state_net = hk.Sequential(
             [
                 hk.Linear(self._embedding_dim),
-                hk.LayerNorm(axis=-1),
+                hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
                 jax.nn.relu,
                 hk.Linear(self._embedding_dim),
             ],
@@ -234,7 +234,9 @@ class RepresentationNet(hk.Module):
             for i in range(self._hparams.representation.repr_net_res_blocks)
         ]
         permutations_encoded = all_state_net(grouped_representation)
-        joint_encoding = joint_state_net(jnp.mean(permutations_encoded, axis=1))
+        # joint_encoding = joint_state_net(jnp.mean(permutations_encoded, axis=1))
+        joint_encoding = joint_state_net(permutations_encoded) # TODO: Figure out this mean thing. is it across batches or something?
+        # BUG: Is this supposed to flatten to a vector?
         for net in joint_resnet:
             joint_encoding = net(joint_encoding)
         return joint_encoding
@@ -338,6 +340,7 @@ if __name__ == "__main__":
     params = forward.init(rng_key, test_obs)
     pred = forward.apply(params, rng_key, test_obs)
     print(pred)
+    print(pred.shape)
 
     # print(MultiQueryAttentionBlock.sinusoid_position_encoding(10, 5))
 
