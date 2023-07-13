@@ -274,7 +274,7 @@ class DistributionSupport(object):
         self.num_bins = num_bins
 
     def mean(self, logits: chex.Array) -> jnp.float32:
-        return jnp.mean(logits, axis=0).astype(jnp.float32)
+        return jnp.mean(logits, axis=0).astype(jnp.float32)  # pyright: ignore
 
     def scalar_to_two_hot(self, scalar: float) -> chex.Array:
         pass
@@ -330,7 +330,7 @@ class PredictionNet(hk.Module):
         time_value = time_value_head(embedding)
 
         return NetworkOutput(  # pyright: ignore reportUnknownArgumentType
-            value=correctness_value["mean"] + time_value["mean"],
+            value=correctness_value["mean"] + time_value["mean"],  # pyright: ignore
             correctness_value_logits=correctness_value["logits"],
             time_value_logits=time_value["logits"],
             policy_logits=policy_head(embedding),
