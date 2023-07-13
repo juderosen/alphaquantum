@@ -276,8 +276,8 @@ class DistributionSupport(object):
     def mean(self, logits: chex.Array) -> jnp.float32:
         return jnp.mean(logits, axis=0).astype(jnp.float32)  # pyright: ignore
 
-    def scalar_to_two_hot(self, scalar: float) -> chex.Array:
-        pass
+    # def scalar_to_two_hot(self, scalar: float) -> chex.Array:
+    #     pass
 
 
 class CategoricalHead(hk.Module):
