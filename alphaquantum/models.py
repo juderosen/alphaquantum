@@ -273,8 +273,8 @@ class DistributionSupport(object):
         self.value_max = value_max
         self.num_bins = num_bins
 
-    def mean(self, logits: chex.Array) -> jnp.float32:
-        return jnp.mean(logits, axis=0).astype(jnp.float32)  # pyright: ignore
+    def mean(self, logits: chex.Array) -> chex.Array: # float
+        return jnp.mean(logits, axis=0).astype(jnp.float32)
 
     # def scalar_to_two_hot(self, scalar: float) -> chex.Array:
     #     pass
