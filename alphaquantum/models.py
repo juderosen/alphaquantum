@@ -63,7 +63,7 @@ class Network(object):
 
     def __init__(self, hparams: Hyperparams, task_spec: TaskSpec):
         self.representation = hk.transform(
-            RepresentationNet(hparams, task_spec, hparams.embedding_dim)
+            RepresentationNet(hparams, task_spec, hparams.embedding_dim) # pyright: ignore
         )
         self.prediction = hk.transform(
             PredictionNet(
@@ -71,7 +71,7 @@ class Network(object):
                 value_max=hparams.value.max,
                 value_num_bins=hparams.value.num_bins,
                 embedding_dim=hparams.embedding_dim,
-            )
+            ) # pyright: ignore
         )
         rep_key, pred_key = jax.random.split(jax.random.PRNGKey(42))
         self.params = {
